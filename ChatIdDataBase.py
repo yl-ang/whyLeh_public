@@ -18,9 +18,13 @@ class ChatIdDataBase:
         self.conn.commit()
 
     def add_chatID(self, module, chatID, dailyPrompt):
-        stmt = "INSERT INTO chatID_DB (module, chatID, dailyPrompt) VALUES (?, ?, ?)"
-        args = (module, chatID, dailyPrompt)
+        stmt = "DELETE FROM chatID_DB WHERE module = (?)"
+        args = (module, )
         self.conn.execute(stmt, args)
+        self.conn.commit()
+        update_stmt = "INSERT INTO chatID_DB (module, chatID, dailyPrompt) VALUES (?, ?, ?)"
+        update_args = (module, chatID, dailyPrompt)
+        self.conn.execute(update_stmt, update_args)
         self.conn.commit()
 
     def get_chatID(self, module):
@@ -36,6 +40,12 @@ class ChatIdDataBase:
     def check_chat_id(self, chatID):
         stmt = "SELECT module FROM chatID_DB WHERE chatID= (?)"
         args = (chatID, )
+        lst = [x for x in self.conn.execute(stmt, args)]
+        return len(lst) > 0
+
+    def check_module(self, module):
+        stmt = "SELECT chatID FROM chatID_DB WHERE module= (?)"
+        args = (module, )
         lst = [x for x in self.conn.execute(stmt, args)]
         return len(lst) > 0
 

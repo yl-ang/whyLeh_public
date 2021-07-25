@@ -1,3 +1,4 @@
+from os import truncate
 from bidict import bidict
 import Constants as keys
 from datetime import time as timer
@@ -14,14 +15,18 @@ import requests
 from tabulate import tabulate
 import json
 import nus_mod
+import math
 from ChatIdDataBase import ChatIdDataBase
-
+from profanity_filter import ProfanityFilter
+from captcha.image import ImageCaptcha
+import random
+from base64 import b64encode
+from io import BytesIO
 
 bot = Bot(keys.API_KEY)
 
-# weds
-# We need to think of a way to do the setup
-# mod_grp_dict = bidict()
+
+pf = ProfanityFilter(languages=['en'])
 
 # This is how we get the list of mods from nus modules api, end of sem then run it
 with open('nus_mods.json', 'rb') as input_file:
@@ -40,8 +45,9 @@ chat_id_db = ChatIdDataBase()
 
 print("Bot started ....")
 
+captcha_count = 1
 question_database = {}
-
+captcha_lst = {}
 def get_module(txt):
     return txt.split()[1]
 
@@ -52,6 +58,87 @@ def check_grp_db(chat_id):
     return chat_id_db.check_chat_id(chat_id)
     ## new db.sqlite if the chat id is in.
     # return True/False
+
+def random_image_captcha():
+
+    words="123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
+    noisecurve_number=1
+    noisedot_width=6
+    noisedot_number=32
+    length=6
+    n, key = len(words), ""
+    generator = ImageCaptcha(width=290,height=60)
+
+    for i in range(length):
+        key += words[random.randint(0, n-1)]
+
+    rgb = (random.randint(0, 256), random.randint(0,
+                                                  256), random.randint(0, 256))
+    b_rgb = (random.randint(0,
+                            256), random.randint(0,
+                                                 256), random.randint(0, 256))
+    
+    img = generator.create_captcha_image(key, rgb, background=b_rgb)
+
+    for i in range(noisecurve_number):
+        img = generator.create_noise_curve(img, rgb)
+    
+    img = generator.create_noise_dots(img, rgb, noisedot_width, noisedot_number)
+    bio = BytesIO()
+    bio.name = 'image.jpeg'
+    img.save(bio, format='JPEG')
+    bio.seek(0)
+    return key, bio
+
+def check_and_send_captcha(chat_id, user_chat_id):
+    global captcha_count
+    if captcha_count == 10:
+        key, bio = random_image_captcha()
+        bot.send_photo(chat_id, photo=bio)
+        print(key)
+        captcha_lst[user_chat_id] = str(key)
+        captcha_count = 0
+    else:
+        captcha_count = captcha_count + 1
+
+
+def captcha_command(update, context):
+
+    # Only works for private
+    # check if the user id is inside the captcha list
+    user_char_id = update.effective_user.id
+    chat_type = update.message.chat.type
+    resp = str(update.message.text)
+
+    if chat_type == "group" or chat_type == "supergroup":
+        pass
+    else:
+        if user_char_id in captcha_lst:
+            # we want to check if the parsed in key is the same
+            correct_key = captcha_lst[user_char_id].lower()
+            user_input_key = ' '.join(resp.split()[1:]).lower()
+            # need to scape the key from the user reply
+
+            if correct_key == user_input_key:
+                success_captcha_pass_test = "You can now continue using whyleh."
+                update.message.reply_text(success_captcha_pass_test)
+                del captcha_lst[user_char_id]
+            else:
+                failure_captcha_fail_test = "Please try again."
+                update.message.reply_text(failure_captcha_fail_test)
+
+        else:
+            failure_captcha_user_not_found = "You are not required to do captcha."
+            update.message.reply_text(failure_captcha_user_not_found)
+        
+
+def sliced_text_lst(text):
+    max_size = 4096
+    amt_sized = math.ceil(len(text) / max_size)
+    lst = []
+    for i in range(0,amt_sized):
+        lst.append(text[max_size * i: max_size * (i + 1)])
+    return lst
 
 def start_command(update, context):
     
@@ -72,6 +159,7 @@ def start_command(update, context):
         bot_rights = ""
         user_rights = ""
         for i in result:
+
             i = str(i)
             if "whyleh_bot" in i:
                 if "administrator" in i:
@@ -79,7 +167,7 @@ def start_command(update, context):
                 else:
                     bot_rights = "none"
             if user_char_id in i:
-                if "administrator" in i:
+                if "administrator" in i or "creator" in i:
                     user_rights = "administrator"
                 else:
                     user_rights = "none"
@@ -103,7 +191,7 @@ def start_command(update, context):
             try:
                 module = get_module(str(update.message.text).lower()).upper()
             except:
-                failure_start_no_mod = "Please enter a module!"
+                failure_start_no_mod = "Please enter a module!\n \nTo set up the bot, enter /start <Module>"
                 update.message.reply_text(failure_start_no_mod)
             
             if valid_module(module):
@@ -121,16 +209,44 @@ def start_command(update, context):
                 failure_start_invalid_mod += "\n" + info_public_group_text
                 update.message.reply_text(failure_start_invalid_mod)
     else:
-        start_text = '''
-        Hi student, ask a question using /ask <module code> <Question>\nFor example, /ask CS1101S what is recursive process?
-        '''
+        start_text= '''/start: Display the list of commands the bot can run.
+/search <module> <Search terms>: Search for similar past questions and replies
+/ask <module> <Question>: Send and display a question to the group of the specified module.
+/reply <module> <Question ID>: Reply to a question anonymously for the specified module.
+/recent <module>: Retrieve and display the recently asked questions with the [Question ID] for the specified module.
+/view <Question ID>: Display the question with replies based on the Question ID.
+/notify <question ID>: Enable notifications to a question based on the specified Question ID.
+/unnotify <Question ID>: Disable notifications to a question based on the specified Question ID.
+/check <module>: Check whether the module has set up WhyLeh bot and get the invite link to the group'''
         update.message.reply_text(start_text)
 
 def help_command(update, context):
 
-    help_text = '''
-    
-    '''
+    chat_type = update.message.chat.type
+
+    if chat_type == "group" or chat_type == "supergroup":
+        help_text= '''/start <Module code>: Set up the bot
+/ask: Ask a question
+/reply <Question ID>: Reply specific question with the Question ID
+/view <Question ID>: View entire question and response of the specific Question ID
+/recent: View recently a list of recently asked questions
+/notify <Question ID>: Get notification when someone respnse to the specific question
+/unnotify <Question ID>: Stop notification for the specific question
+/set_daily: Display daily notification on the list of unanswered questions
+/stop_daily: Stop daily notification on the list of unanswered questions
+/check <module>: Check whether the module has set up WhyLeh bot and get the invite link to the group
+
+To fully utillise the function, please start bot (https://t.me/whyleh_bot) privately'''
+    else:
+        help_text= '''/start: Display the list of commands the bot can run.
+/search <module> <Search terms>: Search for similar past questions and replies
+/ask <module> <Question>: Send and display a question to the group of the specified module.
+/reply <module> <Question ID>: Reply to a question anonymously for the specified module.
+/recent <module>: Retrieve and display the recently asked questions with the [Question ID] for the specified module.
+/view <Question ID>: Display the question with replies based on the Question ID.
+/notify <question ID>: Enable notifications to a question based on the specified Question ID.
+/unnotify <Question ID>: Disable notifications to a question based on the specified Question ID.
+/check <module>: Check whether the module has set up WhyLeh bot and get the invite link to the group'''
     update.message.reply_text(help_text)
 
 def send_message(chat_id, message):
@@ -160,7 +276,7 @@ def recent_command(update, context):
         try:
             module = get_module(str(update.message.text).lower()).upper()
         except:
-            failure_recent_no_mod = "Please enter a module!"
+            failure_recent_no_mod = "Please enter a module! \n \nTo use the recent command, enter /recent <Module>"
             update.message.reply_text(failure_recent_no_mod)
         
     if valid_module(module):
@@ -168,7 +284,17 @@ def recent_command(update, context):
         # question = temp_db.get_questions(recent_mod, grp_chat_id)
         question = temp_db.get_questions(module)
         print(question)
-        update.message.reply_text(tabulate(question, headers=["Id", "Questions"]))
+        
+        questions = []
+        for i in question:
+            if len(i[1]) > 100:
+                truncated = i[1][:100] + "..."
+                questions.append((i[0], truncated))
+            else:
+                questions.append((i[0], i[1]))
+
+        update.message.reply_text(tabulate(questions, headers=["Id", "Questions"])  + "\n\nUse /view ID to view the full question and answer.")
+        # update.message.reply_text(tabulate(question, headers=["Id", "Questions"]))
 
     else:
         failure_recent = "Please enter a valid module code"
@@ -176,24 +302,34 @@ def recent_command(update, context):
         update.message.reply_text(failure_recent)
 
 def notify_command(update, context):
-    question_id = str(update.message.text).lower().split()[1]
-    if temp_db.qn_id_exist(question_id):
-        user_id = update.effective_user.id
-        temp_db.update_notification(question_id, user_id, "add")
+    resp = str(update.message.text).lower().split()
+    if len(resp) > 1:
+        question_id = resp[1]
+        if temp_db.qn_id_exist(question_id):
+            user_id = update.effective_user.id
+            temp_db.update_notification(question_id, user_id, "add")
 
+        else:
+            failure_question_id_notify = "Please enter a valid question id."
+            update.message.reply_text(failure_question_id_notify)
     else:
-        failure_question_id_notify = "Please enter a valid question id."
-        update.message.reply_text(failure_question_id_notify)
+        failure_no_question_id = "Please enter the question id. \n \nTo use the notify command, enter /notify <Question ID>"
+        update.message.reply_text(failure_no_question_id)
 
 def unnotify_command(update, context):
-
-    question_id = str(update.message.text).lower().split()[1]
-    if temp_db.qn_id_exist(question_id):
-        user_id = update.effective_user.id
-        temp_db.update_notification(question_id, user_id, "remove")
+    resp = str(update.message.text).lower().split()
+    if len(resp) > 1:
+        question_id = resp[1]
+        if temp_db.qn_id_exist(question_id):
+            user_id = update.effective_user.id
+            temp_db.update_notification(question_id, user_id, "remove")
+        else:
+            failure_question_id_unnotify = "Please enter a valid question id."
+            update.message.reply_text(failure_question_id_unnotify)
+    
     else:
-        failure_question_id_unnotify = "Please enter a valid question id."
-        update.message.reply_text(failure_question_id_unnotify)
+        failure_no_question_id = "Please enter the question id. \n \nTo use the unnotify command, enter /unnotify <Question ID>"
+        update.message.reply_text(failure_no_question_id)
 
 
 def daily_prompt(context: CallbackContext):
@@ -255,18 +391,56 @@ def stop_daily_prompt_command(update, context):
             update.message.reply_text(failure_recent_grp_missing)
 
 def view_command(update, context):
-    resp = str(update.message.text).lower() # lambda expression to scap off the message id
-    question_id = resp.split()[1]
+    resp = str(update.message.text).lower().split() # lambda expression to scap off the message id
 
-    if temp_db.qn_id_exist(question_id):
-        question = temp_db.get_question_from_id(question_id)[0][0]
-        reply = temp_db.get_reply(question_id)
-        full_response = "%s %s" % (str(question), str(reply))
-        update.message.reply_text(full_response)
+    if len(resp) > 1:
 
+        question_id = resp[1]
+        if temp_db.qn_id_exist(question_id):
+            chat_type = update.message.chat.type
+
+            if chat_type == 'group' or chat_type == 'supergroup':
+                grp_chat_id = update.message.chat_id
+                grp_exist = chat_id_db.check_chat_id(grp_chat_id)
+
+                if grp_exist:
+                    module = chat_id_db.get_module(grp_chat_id)[0]
+                    valid_module_qn_id = temp_db.check_module_qn_id(module, question_id)
+                    if valid_module_qn_id:
+                        question = temp_db.get_question_from_id(question_id)[0][0]
+                        reply = temp_db.get_reply(question_id)
+                        full_response = "%s %s" % (str(question), str(reply))
+
+                        sliced_response = sliced_text_lst(full_response)
+
+                        for i in sliced_response:
+                            bot.send_message(grp_chat_id, i)
+
+                    else:
+                        failure_invalid_module_qn_id = "The question ID does not belong to this module"
+                        update.message.reply_text(failure_invalid_module_qn_id)
+
+                else:
+                    failure_set_up = "Please set up the WhyLeh bot using /start <Module code>"
+                    update.message.reply_text(failure_set_up)
+            
+            else:
+                user_chat_id = update.effective_user.id
+                question = temp_db.get_question_from_id(question_id)[0][0]
+                reply = temp_db.get_reply(question_id)
+                full_response = "%s %s" % (str(question), str(reply))
+
+                sliced_response = sliced_text_lst(full_response)
+
+                for i in sliced_response:
+                    bot.send_message(user_chat_id, i)
+
+        else:
+            failure_invalid_qn_id_reply = "Please enter a valid question id"
+            update.message.reply_text(failure_invalid_qn_id_reply)
     else:
-        failure_invalid_qn_id_reply = "Please enter a valid question id"
-        update.message.reply_text(failure_invalid_qn_id_reply)
+        failure_no_qn_id = "Please enter the question id. \n \nTo use the view command, enter /view <Question ID>"
+        update.message.reply_text(failure_no_qn_id)
 
 def retrieve_latest_id():
     # to map ugly id to nicer one
@@ -283,21 +457,6 @@ def unit_test():
     # tbc
     pass
 
-def search_command(update, context):
-    
-    # Work on this Thurs 17/6 ++ , see "LIKE"
-    search_text = "Select the module to search"
-    keyboard = [
-        [
-            InlineKeyboardButton("GER1000", callback_data='1'),
-            InlineKeyboardButton("CS2030S", callback_data='2'),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text(search_text, reply_markup=reply_markup)
-
-    print(update.callback_query.answer())
-
 
 # UI features to consider:
 # We can give user the choice to get notified or not (for example after they replied to the question)
@@ -308,10 +467,11 @@ def search_command(update, context):
 
 
 def ask_command(update, context):
-
+    # temp_db.search_db_qn()
     # result = retrieve_latest_id()
     # print(result)
     asked = str(update.message.text).lower()
+    resp = str(update.message.text).split()
 
     def get_question(txt, chat_type):
         print(txt.split())
@@ -324,74 +484,276 @@ def ask_command(update, context):
     msg_chat_id = update.message.message_id
     chat_type = update.message.chat.type
     user_chat_id = update.effective_user.id
-
     if chat_type == "group" or chat_type == "supergroup":
 
         grp_exist_status = check_grp_db(grp_chat_id)
-
         if grp_exist_status:
-            question = get_question(asked, chat_type)
-            print(chat_id_db.get_module(grp_chat_id))
-            module = chat_id_db.get_module(grp_chat_id)[0]
+            
+            if len(resp) > 1:
+                question = get_question(asked, chat_type)
+                module = chat_id_db.get_module(grp_chat_id)[0]
+                if valid_module(module):
+                    grp_chat_id = chat_id_db.get_chatID(module)[0]
+                    qn_id = retrieve_latest_id()
+                    success_ask = "Question : %s, ID: %s\n" % (question, qn_id)
+                    success_ask = pf.censor(success_ask)
+                    sliced_ask = sliced_text_lst(success_ask)
+
+                    for i in sliced_ask:
+                        message_id =  bot.send_message(grp_chat_id, i).message_id
+
+                    time_seconds = update.message.date
+                    time_seconds = int(time_seconds.timestamp())
+                    temp_db.add_question(str(qn_id), module, grp_chat_id, message_id, success_ask, str(user_chat_id),"False", "", str(user_chat_id), time_seconds)
+
+            else:
+                failure_ask = "Please enter the question you would like to ask.\n \nTo use the ask command, enter /ask <Question>"
+                update.message.reply_text(failure_ask)
+                
         else:
             failure_ask_grp_missing = "Please setup the bot using /start."
             update.message.reply_text(failure_ask_grp_missing)
-    
-    else:
-        module = get_module(asked).upper()
-        question = get_question(asked, chat_type)
-        grp_chat_id = chat_id_db.get_chatID(module)[0]
 
-    if len(question) > 0 and valid_module(module):
-
-        qn_id = retrieve_latest_id()
-        success_ask = "Question : %s, ID: %s " % (question, qn_id)
-        message_id =  bot.send_message(grp_chat_id, success_ask).message_id
-        time_seconds = update.message.date
-        time_seconds = int(time_seconds.timestamp())
-        temp_db.add_question(str(qn_id), module, grp_chat_id, message_id, success_ask, str(user_chat_id),"False", "", str(user_chat_id), time_seconds)
+        
 
     else:
-        failure_ask = "Please ask a valid question"
-        update.message.reply_text(failure_ask)
+        check_and_send_captcha(grp_chat_id, user_chat_id)
+        print(captcha_lst)
+        
+
+        if user_chat_id in captcha_lst:
+            failure_capcha_test = "Please complete the capcha first.\nEnter the following command /captcha <answer> to complete the captcha."
+            update.message.reply_text(failure_capcha_test)
+
+        else:
+            if len(resp) > 2:
+                module = get_module(asked).upper()
+                question = get_question(asked, chat_type)
+                grp_exist = chat_id_db.check_module(module)
+                if valid_module(module) and grp_exist:
+
+                    grp_chat_id = chat_id_db.get_chatID(module)[0]
+                    qn_id = retrieve_latest_id()
+                    success_ask = "Question : %s, ID: %s\n" % (question, qn_id)
+                    message_id =  bot.send_message(grp_chat_id, success_ask).message_id
+                    time_seconds = update.message.date
+                    time_seconds = int(time_seconds.timestamp())
+                    temp_db.add_question(str(qn_id), module, grp_chat_id, message_id, success_ask, str(user_chat_id),"False", "", str(user_chat_id), time_seconds)
+                    success_private_ask = "Your question has been sent to the group"
+                    update.message.reply_text(success_private_ask)
+
+                else:
+                    if not valid_module(module):
+                        failure_invalid_module = "The module %s you have entered do not exist" % module
+                        update.message.reply_text(failure_invalid_module)
+
+                    elif not grp_exist:
+                        failure_group_not_exist = "The %s group may not exist or has not set up the WhyLeh bot" % module
+                        update.message.reply_text(failure_group_not_exist)
+
+            else:
+                if len(resp) == 1:
+                    failure_no_mod_question = "Please enter the module and question you would like to ask.\n \nTo use the ask command, enter /ask <Module> <Question>"
+                    update.message.reply_text(failure_no_mod_question)
+
+                elif len(resp) == 2:
+                    failure_no_question = "Please enter the question you would like to ask.\n \nTo use the ask command, enter /ask <Module> <Question>"
+                    update.message.reply_text(failure_no_question)
 
 def reply_command(update, context):
+    resp = str(update.message.text).lower().split() # lambda expression to scap off the message id
+    if len(resp) > 2:
+        question_id = resp[1]
+        reply = '  '.join(resp[2:])
+        reply = pf.censor(reply)
+        # update.message.reply_text("A\nB")
+        if temp_db.qn_id_exist(question_id):
+            message_id = temp_db.get_message_id(question_id)
+            question = temp_db.get_question_from_id(question_id)[0][0]
+            module = temp_db.get_module(question_id)[0][0]
+            chat_id = chat_id_db.get_chatID(module)[0]
+            chat_type = update.message.chat.type
+            user_chat_id = update.effective_user.id
+            grp_chat_id = update.message.chat_id
+            captcha_boo_checker = True
 
-    resp = str(update.message.text).lower() # lambda expression to scap off the message id
-    question_id = resp.split()[1]
-    reply = '  '.join(resp.split()[2:])
-    
-    # update.message.reply_text("A\nB")
-    if temp_db.qn_id_exist(question_id):
-        message_id = temp_db.get_message_id(question_id)
-        question = temp_db.get_question_from_id(question_id)[0][0]
-        module = temp_db.get_module(question_id)[0][0]
-        chat_id = chat_id_db.get_chatID(module)[0]
+            if chat_type == "group" or chat_type == "supergroup":
+                
+                module = chat_id_db.get_module(grp_chat_id)[0]
+            else:
+                check_and_send_captcha(grp_chat_id, user_chat_id)
+                if user_chat_id in captcha_lst:
+                    captcha_boo_checker = False
 
-        # need to add a if else check for valid question id
-        if len(reply) > 0:
-            reply = "\nReply: %s" % (reply)
-            temp_db.update_reply(question_id, reply)
-            full_reply = temp_db.get_reply(question_id)
-            print(full_reply)
-            success_reply = "%s %s" % (question, full_reply)
-            
-            # need to consider resending the message and update the db to reply to it (since tele has message edit exp date)
-            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=success_reply)
+            # need to add a if else check for valid question id
+            if captcha_boo_checker:
+                if len(reply) > 0 and temp_db.check_module_qn_id(module, question_id):
 
-            #to notify indivual
-            user_id = update.effective_user.id
-            list_idv = temp_db.get_notification(question_id, user_id)
-            message = "Someone replied to %s Question %s" % (module, question_id)
-            for idv in list_idv:
-                send_message(idv, message)
-            temp_db.update_notification(question_id, user_id, "add")
+                    question = temp_db.get_question_from_id(question_id)[0][0]
+                    old_reply = temp_db.get_reply(question_id)
+                    old_full_reply = "%s %s" % (str(question), str(old_reply))
+
+                    print(temp_db.check_module_qn_id(module, question_id))
+                    reply = "\nReply: %s\n" % (reply)
+                    temp_db.update_reply(question_id, reply)
+                    full_reply = temp_db.get_reply(question_id)
+                    print(full_reply)
+                    success_reply = "%s %s" % (question, full_reply)
+
+                    sliced_old_reply = sliced_text_lst(old_full_reply)
+                    sliced_new_reply = sliced_text_lst(success_reply)
+
+                    if len(sliced_old_reply) == len(sliced_new_reply):
+                        
+                        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=sliced_new_reply[-1])
+
+                    else:
+                        for i in sliced_new_reply:
+                            new_message_id =  bot.send_message(grp_chat_id, i).message_id
+                        # update the new message id for the question in db
+                        temp_db.update_message_id(new_message_id, question_id)
+
+                    # need to consider resending the message and update the db to reply to it (since tele has message edit exp date)
+                    #to notify indivual
+                    user_id = update.effective_user.id
+                    list_idv = temp_db.get_notification(question_id, user_id)
+                    message = "Someone replied to %s Question %s" % (module, question_id)
+                    author_id = temp_db.get_author(question_id)
+                    answered = temp_db.check_answered(question_id)
+                    for idv in list_idv:
+                        if idv == author_id and answered == 'False':
+                            author_messsage = "Someone replied to %s Question %s \n \nPlease enter /answered %s if your question has been answered" % (module, question_id, question_id)
+                            send_message(idv, author_messsage)
+                        else:
+                            send_message(idv, message)
+                    temp_db.update_notification(question_id, user_id, "add")
+                else:
+                    if len(reply) == 0:
+                        failure_empty_reply = "Please reply something."
+                        update.message.reply_text(failure_empty_reply)
+                    else:
+                        failure_qn_id_module_not_match = "The question id does not belong to the group"
+                        update.message.reply_text(failure_qn_id_module_not_match)
+            else:
+                failure_reply_captcha_test = "Please complete the capcha first.\nEnter the following command /captcha <answer> to complete the captcha."
+                update.message.reply_text(failure_reply_captcha_test)
+
+
         else:
-            failure_empty_reply = "Please reply something."
-            update.message.reply_text(failure_empty_reply)
+            failure_invalid_qn_id_reply = "Please enter a valid question id"
+            update.message.reply_text(failure_invalid_qn_id_reply)
     else:
-        failure_invalid_qn_id_reply = "Please enter a valid question id"
-        update.message.reply_text(failure_invalid_qn_id_reply)
+        if len(resp) == 1:
+            failure_no_qn_id_reply = "Please enter the Question ID and reply.\n \nTo use the reply command, enter /reply <Qn ID> <Reply>"
+            update.message.reply_text(failure_no_qn_id_reply)
+
+        elif len(resp) ==2:
+            failure_no_question = "Please enter the reply.\n \nTo use the reply command, enter /reply <Qn ID> <Reply>"
+            update.message.reply_text(failure_no_question)
+
+def answered_command(update, context):
+    resp = str(update.message.text).lower().split()
+    if len(resp) > 1:
+        question_id = resp[1]
+        user_chat_id = update.effective_user.id
+        if temp_db.qn_id_exist(question_id):
+            author_id = temp_db.get_author(question_id)
+            if author_id == str(user_chat_id):
+                temp_db.update_question(question_id, "True")
+                success_answered = "Thank You, Question %s has been marked as answered" % question_id
+                update.message.reply_text(success_answered)
+
+            else:
+                failure_author = "Sorry, only author of this question can mark it as answered"
+                update.message.reply_text(failure_author)
+
+        else:
+            failure_invalid_qn_id_reply = "Please enter a valid question id"
+            update.message.reply_text(failure_invalid_qn_id_reply)
+    else:
+        failure_no_qn_id = "Please enter the Question ID.\n \nTo use the answered command, enter /answered <Qn ID>"
+        update.message.reply_text(failure_no_qn_id)
+
+def search_command(update, context):
+    resp = str(update.message.text).lower()
+    chat_type = update.message.chat.type
+
+    if chat_type != 'private':
+        failure_not_private = "This command is only available on private message. Please use the search command (https://t.me/whyleh_bot) privately "
+        update.message.reply_text(failure_not_private)
+
+    else:
+        check_resp = resp.split()
+        if len(check_resp) > 2:
+            module = get_module(resp).upper()
+            search_item = '  '.join(resp.split()[2:])
+            grp_exist = chat_id_db.check_module(module)
+
+            if len(search_item) > 0 and valid_module(module) and grp_exist:
+                question = temp_db.search_db_qn(module, search_item)
+                questions = []
+                qn_id =  []
+                for i in question:
+                    if i[0] not in qn_id:
+                        if len(i[1]) > 100:
+                            truncated = i[1][:100] + "..."
+                            questions.append((i[0], truncated))
+                        else:
+                            questions.append((i[0], i[1]))
+                        qn_id.append(i[0])
+                if len(questions) == 0:
+                    no_result = "Sorry, there is no great match for your search"
+                    update.message.reply_text(no_result)
+                else:
+                    update.message.reply_text(tabulate(questions, headers=["Id", "Questions"])  + "\n\nUse /view ID to view the full question and answer.")
+
+            else:
+                if not valid_module(module):
+                    failure_invalid_module = "The module %s you have entered do not exist" % module
+                    update.message.reply_text(failure_invalid_module)
+
+                elif not grp_exist:
+                    failure_group_not_exist = "The %s group may not exist or has not set up the WhyLeh bot" % module
+                    update.message.reply_text(failure_group_not_exist)
+
+                elif len(search_item) == 0:
+                    failure_search = "Please ask a valid question"
+                    update.message.reply_text(failure_search)
+        else:
+            if len(check_resp) == 1:
+                failure_no_mod_query = "Please enter the module and the query you would like to search.\n \nTo use the search command, enter /search <Module> <Search Term>"
+                update.message.reply_text(failure_no_mod_query)
+
+            elif len(check_resp) == 2:
+                failure_no_query = "Please enter what you would like to search.\n \nTo use the search command, enter /search <Module> <Search Term>"
+                update.message.reply_text(failure_no_query)
+
+def check_command(update, context):
+    resp = str(update.message.text).lower()
+    check_resp = resp.split()
+    if len(check_resp) > 1:
+        module = get_module(resp).upper()
+        valid_mod = valid_module(module)
+        if valid_mod:
+            group_exist = chat_id_db.check_module(module)
+            
+            if group_exist:
+                chat_id = chat_id_db.get_chatID(module)
+                invite_link = bot.getChat(chat_id[0]).invite_link
+                success_bot_setup = "The bot has been setup for %s \n \nPlease use this link %s to join the group" % (module, invite_link)
+                update.message.reply_text(success_bot_setup)
+
+            else:
+                failure_group_not_setup = "The bot has not been setup for %s" % module
+                update.message.reply_text(failure_group_not_setup)
+
+        else:
+            failure_invalid_module = "The module %s you have entered do not exist" % module
+            update.message.reply_text(failure_invalid_module)
+
+    else:
+        failure_no_module = "Please enter the module you would like to check.\n \nTo use the check command, enter /check <Module>"
+        update.message.reply_text(failure_no_module)
 
 
 def handle_message(update, context):
@@ -421,11 +783,14 @@ def main():
     dp.add_handler(CommandHandler("view", view_command))
     dp.add_handler(CommandHandler("set_daily", set_daily_prompt_command))
     dp.add_handler(CommandHandler("stop_daily", stop_daily_prompt_command))
+    dp.add_handler(CommandHandler("answered", answered_command))
+    dp.add_handler(CommandHandler("check", check_command))
+    dp.add_handler(CommandHandler("captcha", captcha_command))
     # dp.add_handler(CommandHandler("daily", daily_prompt, pass_job_queue=True))
     dp.add_handler(MessageHandler(Filters.text, handle_message))
     dp.add_error_handler(error_logging)
     job = updater.job_queue
-    job.run_daily(daily_prompt, time=timer(hour = 11, minute = 59, second = 55),days=(0, 1, 2, 3, 4, 5, 6))
+    job.run_daily(daily_prompt, time=timer(hour = 5, minute = 50, second = 55),days=(0, 1, 2, 3, 4, 5, 6))
     updater.start_polling()
     updater.idle()
 

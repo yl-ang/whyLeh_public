@@ -6,16 +6,18 @@ the export method which will convert all the questions within the tempdb into js
 This will make use of polymorphism to convert each individual question into its json representation.
 '''
 import sqlite3
-
+from whoosh.analysis import StemmingAnalyzer
 class TempDB:
 
     def __init__(self, dbname="whyleh.sqlite"):
         self.dbname = dbname
         self.conn = sqlite3.connect(dbname, check_same_thread=False)
+        
 
     def setup(self):
-        tblstmt = "CREATE TABLE IF NOT EXISTS items (qn_id INTEGER, module TEXT, grp_id INTEGER, message_id INTEGER, qn TEXT, author TEXT, answered TEXT, reply TEXT, individuals TEXT, time INTEGER)"
 
+        # Normal table
+        tblstmt = "CREATE TABLE IF NOT EXISTS items (qn_id INTEGER, module TEXT, grp_id INTEGER, message_id INTEGER, qn TEXT, author TEXT, answered TEXT, reply TEXT, individuals TEXT, time INTEGER)"
         qnIdidx = "CREATE INDEX IF NOT EXISTS qnIdidx ON items (qn_id ASC)"
         moduleidx = "CREATE INDEX IF NOT EXISTS moduleidx ON items (module ASC)"
         grpidx = "CREATE INDEX IF NOT EXISTS grpidx ON items (grp_id ASC)" 
@@ -36,6 +38,10 @@ class TempDB:
         self.conn.execute(answeredidx)
         self.conn.execute(individx)
         self.conn.execute(timeidx)
+
+        # fts5 search table added
+        self.conn.execute('DROP TABLE IF EXISTS search_qn_tb')
+        self.conn.execute('CREATE VIRTUAL TABLE IF NOT EXISTS search_qn_tb USING fts5 (qn_id, module, qn, reply, tokenize = "porter ascii")')
         self.conn.commit()
 
     def add_question(self, qn_id, module, grp_id, message_id, qn, author, answered, reply, individuals, time):
@@ -47,8 +53,8 @@ class TempDB:
     def qn_id_exist(self, qn_id):
         stmt = "SELECT 1 FROM items WHERE qn_id = (?)"
         args = (qn_id,)
-        result = [x for x in self.conn.execute(stmt, args)][0][0]
-        return result 
+        result = [x for x in self.conn.execute(stmt, args)]
+        return len(result) > 0
 
     def get_qn_id(self):
         stmt = "SELECT qn_id FROM items ORDER BY qn_id DESC LIMIT 1"
@@ -131,4 +137,84 @@ class TempDB:
         stmt = "SELECT qn FROM items WHERE module= (?) AND answered = (?) AND time > (?) ORDER By qn_id DESC LIMIT 5"
         args = (module, "False", int(seconds),)
         result =  [x for x in self.conn.execute(stmt, args)]
+        return result
+
+    def get_author(self, qn_id):
+        stmt = "SELECT author FROM items WHERE qn_id= (?)"
+        args = (qn_id,)
+        result = [x for x in self.conn.execute(stmt, args)][0][0]
+        return result
+
+    def update_question(self, qn_id, answered):
+        stmt = 'UPDATE items SET answered= (?) WHERE qn_id= (?)'
+        args = (answered, qn_id)
+        self.conn.execute(stmt, args)
+        self.conn.commit()
+
+    def check_answered(self, qn_id):
+        stmt = "SELECT answered FROM items WHERE qn_id= (?)"
+        args = (qn_id,)
+        result = [x for x in self.conn.execute(stmt, args)][0][0]
+        return result
+
+    def check_module_qn_id(self, module, qn_id):
+        stmt = "SELECT answered FROM items WHERE module= (?) AND qn_id= (?)"
+        args = (module, qn_id)
+        lst = [x for x in self.conn.execute(stmt, args)]
+        return len(lst) > 0
+
+    def update_message_id(self, new_msg_id, qn_id):
+        stmt = "UPDATE items SET message_id= (?) WHERE qn_id= (?)"
+        args = (new_msg_id, qn_id)
+        self.conn.execute(stmt, args)
+        self.conn.commit
+
+    '''''
+    def search_db_qn(self, module, query):
+        self.conn.execute('INSERT INTO search_qn_tb SELECT qn_id, module, qn FROM items;')
+        stmt = "SELECT qn FROM search_qn_tb WHERE module = (?) AND qn MATCH 'qn : ("
+        analyzer = StemmingAnalyzer()
+        token_words = [token.text for token in analyzer(query)]
+
+        print(token_words)
+        len_token_words = len(token_words)
+
+        if  len_token_words >= 3:
+            for i in range(0,2):
+                stmt += token_words[i] + " AND "
+            stmt += token_words[i + 1] + ")';"
+        else:
+            if len_token_words == 1:
+                stmt += token_words[0] + ")';"
+            else:
+                for i in range(0,1):
+                    stmt += token_words[i] + " AND "
+                stmt += token_words[i + 1] + ")';"
+        
+        args = (module,)
+        result = [x for x in self.conn.execute(stmt,args)]
+        print(result)
+        self.conn.commit
+        return result
+    '''''
+
+    def search_db_qn(self, module, query):
+        self.conn.execute('INSERT INTO search_qn_tb SELECT qn_id, module, qn , reply FROM items;')
+        stmt = "SELECT qn_id,qn FROM search_qn_tb WHERE module = (?) AND search_qn_tb MATCH ? ORDER BY rank LIMIT 5"
+        
+        analyzer = StemmingAnalyzer()
+        token_words = [token.text for token in analyzer(query)]
+        print(token_words)
+        if len(token_words) == 0:
+            return []
+        
+        search_term = str(token_words[0])
+
+        for x in range(1, len(token_words)):
+            search_term = search_term + ' OR ' + str(token_words[x])
+
+        args = (module, search_term)
+        result = [x for x in self.conn.execute(stmt,args)]
+        print(result)
+        self.conn.commit
         return result
