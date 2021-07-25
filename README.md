@@ -1,2 +1,2 @@
 # whyLeh
- An orbital 2021 project
+Orbital 2021 project
